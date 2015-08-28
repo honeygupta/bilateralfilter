@@ -1,5 +1,6 @@
 #include "opencv2\highgui\highgui.hpp"
 #include "opencv2\imgproc\imgproc.hpp"
+#include <math.h>
 #include <iostream>
 #include <ctime>
 #include<CL/cl.h>
@@ -8,23 +9,18 @@
 using namespace cv;
 using namespace std;
 
-
-
 const char *fileName = "kernelfile.cl";
-
 
 int main()
 {
 
-	int sigma_s =3;
+	int sigma_s =10;
 	float sigma_r = 30;
-	int N = 10;
+	int N = 3;
 	Mat image;
-	image = imread("peppers - Copy.jpg", 0);
+	image = imread("lennag2.jpg", 0);
 	imshow("input", image);
 	waitKey(500);
-
-
 
 
 	///////////////////////////////////             initialisation              //////////////////////////////////////////////////////////
@@ -36,12 +32,12 @@ int main()
 	int i, j, l;
 	float tc;
 	float c;
-	int w = 3 * sigma_s;
+	int w =sigma_s;
 	float k;
 	float accumulation;
 	float weightsum;
 	int row, col;
-	double elapsed_sec, PSNR0, PSNR1, u;
+	double elapsed_sec,  PSNR, u;
 
 
 	
@@ -56,9 +52,12 @@ int main()
 	cl_platform_id platform_id = NULL;
 	cl_int num;
 	cl_uint platform_num;
+	//cl_uint device_num;
 	cl_device_id *devices;
 	size_t deviceBufferSize = -1;
-	
+	/*cl_kernel kernel2 = NULL;
+	cl_program program2 = NULL;	
+	cl_mem memory2[6] = { 0, 0, 0, 0, 0, 0, };*/
 
 
 	/* Get Platform and Device Info */
@@ -123,7 +122,11 @@ int main()
 		std::cerr << "Failed to open file for reading: " << fileName << std::endl;
 	}
 
-	
+	/*std::ifstream kernelFile2(fileName2, std::ios::in);
+	if (!kernelFile.is_open())
+	{
+		std::cerr << "Failed to open file for reading: " << fileName2 << std::endl;
+	}*/
 
 
 	std::ostringstream oss;
@@ -162,21 +165,22 @@ int main()
 
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-	tc = 255 / 2;
+	
+	tc = 127;
 	c = 1;
 	
 	int a[1] = { w };
 	float b[1] = { c };
 	size_t globalWorkSize[2] = {x,y};
 	
-
+	float que;
+	que = (w*w);
+	que = 1 / (que);
+	//cout << que << endl;
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 
 		/////////////////////////////////              gaussian     g_s          ///////////////////////////////////////////////////////
-		g_s_x = getGaussianKernel(w, sigma_s);
-		g_s_y = getGaussianKernel(w, sigma_s);
-		g_s_mat = g_s_x * g_s_y.t();
 		
 		float *g_s = new float[w*w];
 		
@@ -185,10 +189,10 @@ int main()
 		{
 			for (j = 0; j<w; j++)
 			{
-				g_s[(i*w)+j] = (float)g_s_mat.at<double>(j, i);
-				
+				g_s[(i*w) + j] = que;
+				//cout << g_s[(i*w) + j] << " ";
 			}
-			
+			//cout << endl;
 		}
 
 		
@@ -209,23 +213,23 @@ int main()
 			
 		memory[0] = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_ALLOC_HOST_PTR, sizeof(float)*(x*y), NULL, NULL);
 		memory[1] = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_ALLOC_HOST_PTR, sizeof(float)* (x*y), NULL, NULL);
-		memory[2] = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_ALLOC_HOST_PTR, sizeof(float)* (w*w), NULL, NULL);
-		memory[3] = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_ALLOC_HOST_PTR, sizeof(int)* 1, NULL, NULL);
-		memory[5] = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_ALLOC_HOST_PTR, sizeof(float)*(x*y), NULL, NULL);
-		memory[6] = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_ALLOC_HOST_PTR, sizeof(float)* (x*y), NULL, NULL);
-		memory[7] = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_ALLOC_HOST_PTR, sizeof(float)* 1, NULL, NULL);*/
-
+		memory[2] = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_ALLOC_HOST_PTR, sizeof(int)* 1, NULL, NULL);
+		memory[3] = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_ALLOC_HOST_PTR, sizeof(float)* (w*w), NULL, NULL);
+		
 		num = clSetKernelArg(kernel, 0, sizeof(cl_mem), &memory[0]);
 		num |= clSetKernelArg(kernel, 1, sizeof(cl_mem), &memory[1]);
 		num |= clSetKernelArg(kernel, 2, sizeof(cl_mem), &memory[2]);
 		num |= clSetKernelArg(kernel, 3, sizeof(cl_mem), &memory[3]);
+		
+
 	
+		
 		for (i = 0; i<x; i++)
 		{
 			for (j = 0; j<y; j++)
 			{
 				input[(i*x)+j] = image.at<uchar>(i, j);
-				h[(i*x) + j] = input[(i*x) + j] - tc;
+				h[(i*x) + j] = input[(i*x) + j] - tc ;
 				G[(i*x) + j] = 1;
 				F[(i*x) + j] = exp(-(h[(i*x) + j] * h[(i*x) + j]) / (2 * (sigma_r*sigma_r)));
 				P[(i*x) + j] = 0;
@@ -260,8 +264,26 @@ int main()
 				}
 				Fbar[(i*x) + j] = accumulation / weightsum;
 
+
+
+				/*for (row = i - w / 2; row < i + w / 2; row++)
+				{
+					for (col = j - w / 2; col < j + w / 2; col++)
+					{
+						if ((row>0) && (col>0) && (row < x) && (col < y))
+						{
+							accumulation = F[(row*x) + col];
+							weightsum++;
+						}
+					}
+
+				}
+
+				Fbar[(i*x) + j] = accumulation / (weightsum);*/
+				//cout << Fbar[(i*x) + j] << " ";
 			}
 
+			//cout << endl;
 		}
 	
 		////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -283,26 +305,31 @@ int main()
 					F[(i*x) + j] = H[(i*x) + j] * F[(i*x) + j];
 				}
 			}
+			
+			/*for (row = i - a[0] / 2; row < i + a[0] / 2; row++)
+			{
+			for (col = j - a[0] / 2; col < j + a[0] / 2; col++)
+			{
+			if ((row>0) && (col>0) && (row < x) && (col < y))
+			{
+			accumulation = F[(row*x) + col];
+			weightsum++;
+			}
+			}
 
+			}
 
-
-
+			Fbar[(i*x) + j] = accumulation / (weightsum);*/
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 			
 			clEnqueueWriteBuffer(commandqueue, memory[0], CL_TRUE, NULL, sizeof(float)*(x*y), Fbar, 0, NULL, NULL);
 			clEnqueueWriteBuffer(commandqueue, memory[1], CL_TRUE, NULL, sizeof(float)*(x*y), F, 0, NULL, NULL);
-			clEnqueueWriteBuffer(commandqueue, memory[2], CL_TRUE, NULL, sizeof(float)*(w*w), g_s, 0, NULL, NULL);
-			clEnqueueWriteBuffer(commandqueue, memory[3], CL_TRUE, NULL, sizeof(int), a, 0, NULL, NULL);
-			clEnqueueWriteBuffer(commandqueue, memory[5], CL_TRUE, NULL, sizeof(float)*(x*y), G, 0, NULL, NULL);
-			clEnqueueWriteBuffer(commandqueue, memory[6], CL_TRUE, NULL, sizeof(float)*(x*y), H, 0, NULL, NULL);
-			clEnqueueWriteBuffer(commandqueue, memory[7], CL_TRUE, NULL, sizeof(float), b, 0, NULL, NULL);*/
-			
-		
-			
+			clEnqueueWriteBuffer(commandqueue, memory[2], CL_TRUE, NULL, sizeof(int), a, 0, NULL, NULL);
+			clEnqueueWriteBuffer(commandqueue, memory[3], CL_TRUE, NULL, sizeof(float)*(w*w), g_s, 0, NULL, NULL);
+
 			num = clEnqueueNDRangeKernel(commandqueue, kernel, 2, NULL, globalWorkSize, NULL, 0, NULL, NULL);
 			
 			num = clEnqueueReadBuffer(commandqueue, memory[0], CL_TRUE, 0, (x*y) * sizeof(float), Fbar, 0, NULL, NULL);
-			num = clEnqueueReadBuffer(commandqueue, memory[5], CL_TRUE, 0, (x*y) * sizeof(float), G, 0, NULL, NULL);*/
 			
 			for (i = 0; i<x; i++)
 			{
@@ -312,8 +339,9 @@ int main()
 					G[(i*x) + j] = H[(i*x) + j] * G[(i*x) + j];
 				}
 			}
-			c = c / (l + 1);
+
 			
+			c = c / (l + 1);
 			
 		}
 		
@@ -324,13 +352,16 @@ int main()
 		{
 			for (j = 0; j<y; j++)
 			{
-				output[(i*x) + j] = (sigma_r * (P[(i*x) + j] / Q[(i*x) + j])) + tc;
+				output[(i*x) + j] = (sigma_r * (P[(i*x) + j] / Q[(i*x) + j])) + tc + 4;
 				filtered.at<uchar>(i, j) = output[(i*x) + j];
 			}
 			
 		}
 		
 		//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+	
+		
+	
 		clock_t end = clock();
 
 		
@@ -340,20 +371,19 @@ int main()
 		imshow("Filtered", filtered);
 		waitKey(1000);
 
-		u = (sum(sum((image) ^ 2)))[0];
-
-		PSNR0 = 10 * log10((x * y * 255 ^ 2) / u);
-
 		u = sum(sum((filtered - (image)) ^ 2))[0];
 
-		PSNR1 = 10 * log10((x * y * 255 ^ 2) / u);
+		PSNR = 10 * log10((x * y * 255 ^ 2) / u);
 
-		cout << "PSNR0 = " << PSNR0 << endl << "PSNR1 = " << PSNR1;
+		u = u / (x*y);
 
+		cout << "MSE = " << u << endl << "PSNR = " << PSNR;
+		//imwrite("file25.jpg", filtered);
 		num = clReleaseMemObject(memory[0]);
 		num = clReleaseMemObject(memory[1]);
 		num = clReleaseMemObject(memory[2]);
 		num = clReleaseMemObject(memory[3]);
+			
 	
 		delete[] h;
 		delete[] G;
