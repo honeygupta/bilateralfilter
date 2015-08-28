@@ -1,0 +1,379 @@
+#include "opencv2\highgui\highgui.hpp"
+#include "opencv2\imgproc\imgproc.hpp"
+#include <iostream>
+#include <ctime>
+#include<CL/cl.h>
+#include <fstream>
+#include <sstream>
+using namespace cv;
+using namespace std;
+
+
+
+const char *fileName = "kernelfile.cl";
+
+
+int main()
+{
+
+	int sigma_s =3;
+	float sigma_r = 30;
+	int N = 10;
+	Mat image;
+	image = imread("peppers - Copy.jpg", 0);
+	imshow("input", image);
+	waitKey(500);
+
+
+
+
+	///////////////////////////////////             initialisation              //////////////////////////////////////////////////////////
+	Mat g_s_y;
+	Mat g_s_x;
+	Mat g_s_mat;
+	int x = image.cols;
+	int y = image.rows;
+	int i, j, l;
+	float tc;
+	float c;
+	int w = 3 * sigma_s;
+	float k;
+	float accumulation;
+	float weightsum;
+	int row, col;
+	double elapsed_sec, PSNR0, PSNR1, u;
+
+
+	
+	///////////////////////////////////     kernel       initialisation              //////////////////////////////////////////////////////////
+
+	cl_device_id device_id = NULL;
+	cl_context context = NULL;
+	cl_command_queue commandqueue = NULL;
+	cl_mem memory[4] = { 0, 0, 0,0};
+	cl_program program = NULL;
+	cl_kernel kernel = NULL;
+	cl_platform_id platform_id = NULL;
+	cl_int num;
+	cl_uint platform_num;
+	cl_device_id *devices;
+	size_t deviceBufferSize = -1;
+	
+
+
+	/* Get Platform and Device Info */
+	num = clGetPlatformIDs(1, &platform_id, &platform_num);
+
+	/* Create OpenCL context */
+	cl_context_properties contextProperties[] =
+	{
+		CL_CONTEXT_PLATFORM, (cl_context_properties)platform_id, 0
+	};
+
+	context = clCreateContextFromType(contextProperties, CL_DEVICE_TYPE_GPU, NULL, NULL, &num);
+	
+	if (context == NULL)
+	{
+		std::cerr << "Failed to create OpenCL context." << std::endl;
+
+	}
+
+	num = clGetContextInfo(context, CL_CONTEXT_DEVICES, 0, NULL, &deviceBufferSize);
+	if (num != CL_SUCCESS)
+	{
+		std::cerr << "Failed call to clGetContextInfo(...,GL_CONTEXT_DEVICES,...)";
+		return NULL;
+	}
+
+	if (deviceBufferSize <= 0)
+	{
+		std::cerr << "No devices available.";
+		return NULL;
+	}
+
+
+	// Allocate memory for the devices buffer    
+	devices = new cl_device_id[deviceBufferSize / sizeof(cl_device_id)];
+
+	num = clGetContextInfo(context, CL_CONTEXT_DEVICES, deviceBufferSize, devices, NULL);
+
+	if (num != CL_SUCCESS)
+	{
+		delete[] devices;
+		std::cerr << "Failed to get device IDs";
+
+	}
+
+	commandqueue = clCreateCommandQueue(context, devices[0], 0, NULL);
+	if (commandqueue == NULL)
+	{
+		delete[] devices;
+		std::cerr << "Failed to create commandQueue for device 0";
+		return NULL;
+	}
+	device_id = devices[0];
+	delete[] devices;
+
+
+	/* Load the source code containing the kernel*/
+
+	std::ifstream kernelFile(fileName, std::ios::in);
+	if (!kernelFile.is_open())
+	{
+		std::cerr << "Failed to open file for reading: " << fileName << std::endl;
+	}
+
+	
+
+
+	std::ostringstream oss;
+	oss << kernelFile.rdbuf();
+	std::string srcStdStr = oss.str();
+	const char *srcStr = srcStdStr.c_str();
+	program = clCreateProgramWithSource(context, 1, (const char**)&srcStr, NULL, NULL);
+	if (program == NULL)
+	{
+		std::cerr << "Failed to create CL program from source." << std::endl;
+
+	}
+
+	num = clBuildProgram(program, 0, NULL, NULL, NULL, NULL);
+	if (num != CL_SUCCESS)
+	{
+		// Determine the reason for the error
+		char buildLog[16384];
+		clGetProgramBuildInfo(program, device_id, CL_PROGRAM_BUILD_LOG,
+			sizeof(buildLog), buildLog, NULL);
+
+		std::cerr << "Error in kernel: " << std::endl;
+		std::cerr << buildLog;
+		clReleaseProgram(program);
+
+	}
+
+
+	kernel = clCreateKernel(program, "hello_kernel", NULL);
+
+	if (kernel == NULL)
+	{
+		std::cerr << "Failed to create kernel" << std::endl;
+
+	}
+
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+	tc = 255 / 2;
+	c = 1;
+	
+	int a[1] = { w };
+	float b[1] = { c };
+	size_t globalWorkSize[2] = {x,y};
+	
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+		/////////////////////////////////              gaussian     g_s          ///////////////////////////////////////////////////////
+		g_s_x = getGaussianKernel(w, sigma_s);
+		g_s_y = getGaussianKernel(w, sigma_s);
+		g_s_mat = g_s_x * g_s_y.t();
+		
+		float *g_s = new float[w*w];
+		
+		
+		for (i = 0; i<w; i++)
+		{
+			for (j = 0; j<w; j++)
+			{
+				g_s[(i*w)+j] = (float)g_s_mat.at<double>(j, i);
+				
+			}
+			
+		}
+
+		
+		////////////////////////////////////////              input           //////////////////////////////////////////////////////////
+		Mat filtered(x, y, 0);		
+		
+		int *input = new int[x*y];
+		float *h = new float[x*y];
+		float *G = new float[x*y];
+		float *F = new float[x*y];
+		float *Q = new float[x*y];
+		float *P = new float[x*y];
+		float *H = new float[x*y];
+		float *Fbar = new float[x*y];
+		float *output = new float[x*y];
+		
+	
+			
+		memory[0] = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_ALLOC_HOST_PTR, sizeof(float)*(x*y), NULL, NULL);
+		memory[1] = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_ALLOC_HOST_PTR, sizeof(float)* (x*y), NULL, NULL);
+		memory[2] = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_ALLOC_HOST_PTR, sizeof(float)* (w*w), NULL, NULL);
+		memory[3] = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_ALLOC_HOST_PTR, sizeof(int)* 1, NULL, NULL);
+		memory[5] = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_ALLOC_HOST_PTR, sizeof(float)*(x*y), NULL, NULL);
+		memory[6] = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_ALLOC_HOST_PTR, sizeof(float)* (x*y), NULL, NULL);
+		memory[7] = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_ALLOC_HOST_PTR, sizeof(float)* 1, NULL, NULL);*/
+
+		num = clSetKernelArg(kernel, 0, sizeof(cl_mem), &memory[0]);
+		num |= clSetKernelArg(kernel, 1, sizeof(cl_mem), &memory[1]);
+		num |= clSetKernelArg(kernel, 2, sizeof(cl_mem), &memory[2]);
+		num |= clSetKernelArg(kernel, 3, sizeof(cl_mem), &memory[3]);
+	
+		for (i = 0; i<x; i++)
+		{
+			for (j = 0; j<y; j++)
+			{
+				input[(i*x)+j] = image.at<uchar>(i, j);
+				h[(i*x) + j] = input[(i*x) + j] - tc;
+				G[(i*x) + j] = 1;
+				F[(i*x) + j] = exp(-(h[(i*x) + j] * h[(i*x) + j]) / (2 * (sigma_r*sigma_r)));
+				P[(i*x) + j] = 0;
+				Q[(i*x) + j] = 0;
+				H[(i*x) + j] = h[(i*x) + j] / sigma_r;
+			}
+			
+		}
+		
+		
+
+		////////////////////////////////////////                Fbar(i)            //////////////////////////////////////////////////////////
+		
+		//LOOP3
+		for (i = 0; i < x; i++)
+		{
+			for (j = 0; j < y; j++)
+			{
+				accumulation = 0;
+				weightsum = 0;
+				for (row = 0; row < w - 1; row++)
+				{
+					for (col = 0; col < w - 1; col++)
+					{
+						if (((i + row)< x) && ((j + col)<y))
+						{
+							k = F[(i + row)*x + (j + col)];
+							accumulation += k * g_s[(row*w)+col];
+							weightsum += g_s[(row*w) + col];
+						}
+					}
+				}
+				Fbar[(i*x) + j] = accumulation / weightsum;
+
+			}
+
+		}
+	
+		////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+		clock_t begin = clock();
+		
+		/////////////////////////////////////////////////                LOOP                //////////////////////////////////////////////////////////
+		
+		for (l = 0; l <= N; l++)
+		{
+			
+			b[0] = c;
+			
+			for (i = 0; i<x; i++)
+			{
+				
+				for (j = 0; j<y; j++)
+				{
+					Q[(i*x) + j] = Q[(i*x) + j] + (c*(G[(i*x) + j] * Fbar[(i*x) + j]));
+					F[(i*x) + j] = H[(i*x) + j] * F[(i*x) + j];
+				}
+			}
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+			
+			clEnqueueWriteBuffer(commandqueue, memory[0], CL_TRUE, NULL, sizeof(float)*(x*y), Fbar, 0, NULL, NULL);
+			clEnqueueWriteBuffer(commandqueue, memory[1], CL_TRUE, NULL, sizeof(float)*(x*y), F, 0, NULL, NULL);
+			clEnqueueWriteBuffer(commandqueue, memory[2], CL_TRUE, NULL, sizeof(float)*(w*w), g_s, 0, NULL, NULL);
+			clEnqueueWriteBuffer(commandqueue, memory[3], CL_TRUE, NULL, sizeof(int), a, 0, NULL, NULL);
+			clEnqueueWriteBuffer(commandqueue, memory[5], CL_TRUE, NULL, sizeof(float)*(x*y), G, 0, NULL, NULL);
+			clEnqueueWriteBuffer(commandqueue, memory[6], CL_TRUE, NULL, sizeof(float)*(x*y), H, 0, NULL, NULL);
+			clEnqueueWriteBuffer(commandqueue, memory[7], CL_TRUE, NULL, sizeof(float), b, 0, NULL, NULL);*/
+			
+		
+			
+			num = clEnqueueNDRangeKernel(commandqueue, kernel, 2, NULL, globalWorkSize, NULL, 0, NULL, NULL);
+			
+			num = clEnqueueReadBuffer(commandqueue, memory[0], CL_TRUE, 0, (x*y) * sizeof(float), Fbar, 0, NULL, NULL);
+			num = clEnqueueReadBuffer(commandqueue, memory[5], CL_TRUE, 0, (x*y) * sizeof(float), G, 0, NULL, NULL);*/
+			
+			for (i = 0; i<x; i++)
+			{
+				for (j = 0; j<y; j++)
+				{
+					P[(i*x) + j] = P[(i*x) + j] + (b[0] * (G[(i*x) + j] * Fbar[(i*x) + j]));
+					G[(i*x) + j] = H[(i*x) + j] * G[(i*x) + j];
+				}
+			}
+			c = c / (l + 1);
+			
+			
+		}
+		
+		//////////////////////////////////////////////////        output              ////////////////////////////////////////////////////////////
+		
+		
+		for (i = 0; i<x; i++)
+		{
+			for (j = 0; j<y; j++)
+			{
+				output[(i*x) + j] = (sigma_r * (P[(i*x) + j] / Q[(i*x) + j])) + tc;
+				filtered.at<uchar>(i, j) = output[(i*x) + j];
+			}
+			
+		}
+		
+		//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+		clock_t end = clock();
+
+		
+		elapsed_sec = double(end - begin) / CLOCKS_PER_SEC;
+		cout << "elapsed seconds= " << elapsed_sec << endl;
+
+		imshow("Filtered", filtered);
+		waitKey(1000);
+
+		u = (sum(sum((image) ^ 2)))[0];
+
+		PSNR0 = 10 * log10((x * y * 255 ^ 2) / u);
+
+		u = sum(sum((filtered - (image)) ^ 2))[0];
+
+		PSNR1 = 10 * log10((x * y * 255 ^ 2) / u);
+
+		cout << "PSNR0 = " << PSNR0 << endl << "PSNR1 = " << PSNR1;
+
+		num = clReleaseMemObject(memory[0]);
+		num = clReleaseMemObject(memory[1]);
+		num = clReleaseMemObject(memory[2]);
+		num = clReleaseMemObject(memory[3]);
+	
+		delete[] h;
+		delete[] G;
+		delete[] input;
+		delete[] F;
+		delete[] Fbar;
+		delete[] P;
+		delete[] Q;
+		delete[] H;
+		delete[] g_s;
+		delete[] output;
+
+		num = clFlush(commandqueue);
+		num = clFinish(commandqueue);
+		num = clReleaseKernel(kernel);
+		num = clReleaseProgram(program);
+		num = clReleaseCommandQueue(commandqueue);
+		num = clReleaseContext(context);
+
+		waitKey(0);
+	return 0;
+
+}
